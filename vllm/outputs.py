@@ -123,9 +123,9 @@ class RequestOutput:
         # still run with older versions of vLLM without breaking.
         **kwargs: Any,
     ) -> None:
-        if kwargs:
-            logger.warning_once("RequestOutput: Ignoring extra arguments: %s",
-                                str(kwargs))
+        # if kwargs:
+        #     logger.warning_once("RequestOutput: Ignoring extra arguments: %s",
+        #                         str(kwargs))
         self.request_id = request_id
         self.prompt = prompt
         self.prompt_token_ids = prompt_token_ids
@@ -139,6 +139,7 @@ class RequestOutput:
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
         self.num_cached_tokens = num_cached_tokens
         self.kv_transfer_params = kv_transfer_params
+        self.zwc_output = kwargs.get("zwc_output", None)
 
     def add(self, next_output: "RequestOutput", aggregate: bool) -> None:
         """Merge subsequent RequestOutput into this one"""

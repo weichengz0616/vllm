@@ -75,6 +75,8 @@ class EngineCoreEventType(enum.IntEnum):
     QUEUED = 1
     SCHEDULED = 2
     PREEMPTED = 3
+    STOP = 4
+    FREE = 5
 
 
 class EngineCoreEvent(msgspec.Struct):
@@ -91,7 +93,7 @@ class EngineCoreEvent(msgspec.Struct):
     def new_event(cls,
                   event_type: EngineCoreEventType,
                   timestamp: Optional[float] = None) -> "EngineCoreEvent":
-        timestamp = time.monotonic() if timestamp is None else timestamp
+        timestamp = time.time() if timestamp is None else timestamp
         return cls(event_type, timestamp)
 
 

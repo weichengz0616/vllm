@@ -21,7 +21,7 @@ from vllm.v1.engine.logprobs import LogprobsProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import (IterationStats, LoRARequestStates,
                                    RequestStateStats)
-
+from vllm.entrypoints.openai.protocol import ZWCOutput
 
 class RequestOutputCollector:
     """
@@ -237,6 +237,13 @@ class RequestState:
         else:
             prompt_logprobs = self.logprobs_processor.prompt_logprobs
 
+        zwc_output = ZWCOutput(
+            queue_time=self.stats.queued_ts,
+            sched_time=self.stats.scheduled_ts,
+            stop_time=self.stats.stop_time,
+            free_time=self.stats.free_time,
+        )
+
         return RequestOutput(
             request_id=request_id,
             prompt=self.prompt,
@@ -246,6 +253,7 @@ class RequestState:
             finished=finished,
             kv_transfer_params=kv_transfer_params,
             num_cached_tokens=self.num_cached_tokens,
+            zwc_output=zwc_output,
         )
 
     def _new_completion_output(

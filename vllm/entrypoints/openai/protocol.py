@@ -1577,6 +1577,11 @@ class CompletionResponseChoice(OpenAIBaseModel):
     prompt_logprobs: Optional[list[Optional[dict[int, Logprob]]]] = None
     prompt_token_ids: Optional[list[int]] = None  # For prompt
 
+class ZWCOutput(OpenAIBaseModel):
+    queue_time: float # 进入队列的时刻
+    sched_time: float # 被调度的时刻
+    stop_time: float # 推理结束的时刻
+    free_time: float # kv block 被释放的时刻
 
 class CompletionResponse(OpenAIBaseModel):
     id: str = Field(default_factory=lambda: f"cmpl-{random_uuid()}")
@@ -1592,6 +1597,7 @@ class CompletionResponse(OpenAIBaseModel):
     # vLLM-specific fields that are not in OpenAI spec
     kv_transfer_params: Optional[dict[str, Any]] = Field(
         default=None, description="KVTransfer parameters.")
+    zwc_output: ZWCOutput | None = Field(default=None)
 
 
 class CompletionResponseStreamChoice(OpenAIBaseModel):
@@ -1611,7 +1617,6 @@ class CompletionResponseStreamChoice(OpenAIBaseModel):
     prompt_token_ids: Optional[list[int]] = None
     token_ids: Optional[list[int]] = None
 
-
 class CompletionStreamResponse(OpenAIBaseModel):
     id: str = Field(default_factory=lambda: f"cmpl-{random_uuid()}")
     object: str = "text_completion"
@@ -1619,6 +1624,7 @@ class CompletionStreamResponse(OpenAIBaseModel):
     model: str
     choices: list[CompletionResponseStreamChoice]
     usage: Optional[UsageInfo] = Field(default=None)
+    zwc_output: ZWCOutput | None = Field(default=None)
 
 
 class EmbeddingResponseData(OpenAIBaseModel):

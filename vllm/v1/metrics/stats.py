@@ -67,6 +67,8 @@ class RequestStateStats:
     scheduled_ts: float = 0.0
     first_token_ts: float = 0.0
     last_token_ts: float = 0.0
+    stop_time: float = 0.0 # 请求结束的时间
+    free_time: float = 0.0 # 请求被释放的时间，释放 kv block
 
     # first token latency
     first_token_latency: float = 0.0
@@ -154,6 +156,10 @@ class IterationStats:
             elif event.type == EngineCoreEventType.PREEMPTED:
                 self.num_preempted_reqs += 1
                 LoRARequestStates.preempted_request(lora_stats, req_id)
+            elif event.type == EngineCoreEventType.STOP:
+                req_stats.stop_time = event.timestamp
+            elif event.type == EngineCoreEventType.FREE:
+                req_stats.free_time = event.timestamp
 
     def update_from_finished_request(self, finish_reason: "FinishReason",
                                      num_prompt_tokens: int,

@@ -443,6 +443,7 @@ class OpenAIServingCompletion(OpenAIServing):
                                            request.return_token_ids else None),
                             )
                         ],
+                        zwc_output=res.zwc_output,
                     )
                     if include_continuous_usage:
                         prompt_tokens = num_prompt_tokens[prompt_idx]
@@ -504,6 +505,7 @@ class OpenAIServingCompletion(OpenAIServing):
         num_generated_tokens = 0
         kv_transfer_params = None
         last_final_res = None
+        assert len(final_res_batch) <= 1
         for final_res in final_res_batch:
             last_final_res = final_res
             prompt_token_ids = final_res.prompt_token_ids
@@ -595,6 +597,7 @@ class OpenAIServingCompletion(OpenAIServing):
             choices=choices,
             usage=usage,
             kv_transfer_params=kv_transfer_params,
+            zwc_output=final_res.zwc_output,
         )
 
     def _create_completion_logprobs(

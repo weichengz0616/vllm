@@ -9,6 +9,9 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any, Optional, Union
 
+import multiprocessing as mp
+import json
+
 from vllm.config import VllmConfig
 from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.factory import (
@@ -59,6 +62,7 @@ class Scheduler(SchedulerInterface):
         self.log_stats = log_stats
         self.structured_output_manager = structured_output_manager
         self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder
+        print(f"zwc ---- sched log stats: {log_stats} ----")
 
         # include_finished_set controls whether a separate set of finished
         # request ids should be included in the EngineCoreOutputs returned
@@ -201,7 +205,7 @@ class Scheduler(SchedulerInterface):
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
 
         # For logging.
-        scheduled_timestamp = time.monotonic()
+        scheduled_timestamp = time.time()
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -342,10 +346,12 @@ class Scheduler(SchedulerInterface):
                     is_ready = self._update_waiting_for_remote_kv(request)
                     if is_ready:
                         request.status = RequestStatus.WAITING
+                        # print(f"zwc ---- sched req id: {request.request_id} exited WAITING_FOR_REMOTE_KVS, time: {time.time()}")
                     else:
                         logger.debug(
                             "%s is still in WAITING_FOR_REMOTE_KVS state.",
                             request.request_id)
+                        # print(f"zwc ---- sched req id: {request.request_id} still in WAITING_FOR_REMOTE_KVS, time: {time.time()}")
                         self.waiting.pop_request()
                         skipped_waiting_requests.prepend_request(request)
                         continue
@@ -504,6 +510,7 @@ class Scheduler(SchedulerInterface):
                     # into the WAITING_FOR_REMOTE_KV state.
                     skipped_waiting_requests.prepend_request(request)
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                    # print(f"zwc ---- sched req id: {request.request_id} set to WAITING_FOR_REMOTE_KVS, time: {time.time()}")
                     continue
 
                 req_index += 1
@@ -598,6 +605,10 @@ class Scheduler(SchedulerInterface):
             structured_output_request_ids=structured_output_request_ids,
             grammar_bitmask=grammar_bitmask,
         )
+
+        # print(f"time: {time.time()}, scheduled_tokens: {scheduler_output.num_scheduled_tokens}")
+        # print(f"zwc ---- scheduled output: {scheduler_output}")
+        # print(f"zwc ---- req to new blocks: {req_to_new_blocks}")
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
         # 1. Plan the KV cache store
@@ -888,6 +899,9 @@ class Scheduler(SchedulerInterface):
                 # in pipeline parallelism).
                 continue
 
+            # zwc
+            # request.print_stats_when_first_output()
+
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[
                 req_index] if sampled_token_ids else []
@@ -928,7 +942,9 @@ class Scheduler(SchedulerInterface):
                                      pooler_output)
 
             if stopped:
+                request.record_event(EngineCoreEventType.STOP)
                 kv_transfer_params = self._free_request(request)
+                # print(f"zwc ---- request over: {request}")
                 if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
                 else:
@@ -1157,6 +1173,7 @@ class Scheduler(SchedulerInterface):
         return kv_xfer_params
 
     def _free_blocks(self, request: Request):
+        request.record_event(EngineCoreEventType.FREE)
         assert request.is_finished()
         self.kv_cache_manager.free(request)
         del self.requests[request.request_id]

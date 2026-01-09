@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import regex as re
 import torch
+import time
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -168,6 +169,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
                         "num_block:%d, request_id:%s", len(block_ids),
                         num_block, request_id)
 
+        start_time = time.perf_counter()
         # Get the metadata
         metadata: KVConnectorMetadata = \
             self._get_connector_metadata()
@@ -190,8 +192,8 @@ class P2pNcclConnector(KVConnectorBase_V1):
 
                 layer = kv_cache[forward_context.virtual_engine]
 
-                kv_cache = self.p2p_nccl_engine.recv_tensor(
-                    request.request_id + "#" + layer_name)
+                tensor_id = request.request_id + "#" + layer_name
+                kv_cache = self.p2p_nccl_engine.recv_tensor(tensor_id)
 
                 if kv_cache is None:
                     logger.warning("🚧kv_cache is None, %s", request.request_id)
@@ -199,6 +201,10 @@ class P2pNcclConnector(KVConnectorBase_V1):
 
                 inject_kv_into_layer(layer, kv_cache, request.block_ids,
                                      request.request_id)
+                self.p2p_nccl_engine.pop_recv_store(tensor_id)
+                
+        end_time = time.perf_counter()
+        # print(f"zwc ---- load_kv time: {end_time - start_time}")
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """Blocking until the KV for a specific layer is loaded into vLLM's
@@ -390,6 +396,8 @@ class P2pNcclConnector(KVConnectorBase_V1):
                     scheduler_output.num_scheduled_tokens)[req_id]
                 num_tokens = (num_scheduled_tokens + num_computed_tokens)
                 assert req_id in self.chunked_prefill
+                if new_block_ids is None:
+                    new_block_ids = ([],)
                 block_ids = new_block_ids[0]
                 if not resumed_from_preemption:
                     block_ids = (self.chunked_prefill[req_id][0] + block_ids)

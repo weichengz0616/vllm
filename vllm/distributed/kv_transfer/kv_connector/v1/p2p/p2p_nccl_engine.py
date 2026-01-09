@@ -120,6 +120,7 @@ class P2pNcclEngine:
         mem_pool_size_gb = float(
             self.config.get_from_extra_config("mem_pool_size_gb",
                                               DEFAULT_MEM_POOL_SIZE_GB))
+        print("engine: memory pool size (GB):", mem_pool_size_gb)
         self.pool = TensorMemoryPool(max_block_size=int(mem_pool_size_gb *
                                                         1024**3))  # GB
 
@@ -245,6 +246,18 @@ class P2pNcclEngine:
                 self.buffer_size,
                 self.buffer_size / self.buffer_size_threshold * 100)
         return True
+    
+    def pop_recv_store(self, tensor_id: str) -> None:
+        if tensor_id in self.recv_store:
+            with self.recv_store_cv:
+                tensor = self.recv_store.pop(tensor_id, None)
+            if isinstance(tensor, tuple):
+                addr, _, _ = tensor
+                self.pool.free(addr)
+            elif isinstance(tensor, torch.Tensor):
+                del tensor
+            else:
+                pass
 
     def recv_tensor(
         self,
@@ -340,10 +353,10 @@ class P2pNcclEngine:
                         # Store Tensor in memory pool
                         addr = self.pool.store_tensor(tensor)
                         tensor = (addr, tensor.dtype, tensor.shape)
-                        logger.warning(
-                            "🔴[PUT]Recv Tensor, Out Of Threshold, "
-                            "%s👈%s, data:%s, addr:%d", self.zmq_address,
-                            remote_address.decode(), data, addr)
+                        # logger.warning(
+                        #     "🔴[PUT]Recv Tensor, Out Of Threshold, "
+                        #     "%s👈%s, data:%s, addr:%d", self.zmq_address,
+                        #     remote_address.decode(), data, addr)
                     else:
                         self.buffer_size += tensor_size
 
@@ -412,14 +425,15 @@ class P2pNcclEngine:
 
     def wait_for_sent(self):
         if self.send_type == "PUT_ASYNC":
-            start_time = time.time()
+            # start_time = time.time()
             with self.send_queue_cv:
                 while self.send_queue:
                     self.send_queue_cv.wait()
-            duration = time.time() - start_time
-            logger.debug(
-                "🚧[PUT_ASYNC]It took %.3fms to wait for the send_queue"
-                " to be empty, rank:%d", duration * 1000, self.rank)
+            # self.send_stream.synchronize()
+            # duration = time.time() - start_time
+            # logger.info(
+            #     "🚧[PUT_ASYNC]It took %.3fms to wait for the send_queue"
+            #     " to be empty, rank:%d", duration * 1000, self.rank)
 
     def send_sync(self, item: SendQueueItem) -> bool:
         if item.remote_address is None:
@@ -473,6 +487,8 @@ class P2pNcclEngine:
 
         # Clear the buffer upon request completion.
         for request_id in finished_req_ids:
+            self.send_request_id_to_tensor_ids.pop(request_id, None)
+            self.recv_request_id_to_tensor_ids.pop(request_id, None)
             for layer_name in no_compile_layers:
                 tensor_id = request_id + "#" + layer_name
                 if tensor_id in self.recv_store:
@@ -519,6 +535,7 @@ class P2pNcclEngine:
             self.nccl.ncclSend(buffer_type(tensor.data_ptr()), tensor.numel(),
                                ncclDataTypeEnum.from_torch(tensor.dtype), dst,
                                comm, cudaStream_t(stream.cuda_stream))
+        
         stream.synchronize()
 
     def recv(self, comm, tensor: torch.Tensor, src: int, stream=None):

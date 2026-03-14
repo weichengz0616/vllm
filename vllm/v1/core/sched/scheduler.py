@@ -22,7 +22,7 @@ from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
-                                       SchedulerOutput)
+                                       SchedulerOutput, ShiftedRequestData)
 from vllm.v1.core.sched.request_queue import (SchedulingPolicy,
                                               create_request_queue)
 from vllm.v1.core.sched.utils import check_stop, remove_all
@@ -89,6 +89,9 @@ class Scheduler(SchedulerInterface):
                 "with KV connectors")
             self.connector = KVConnectorFactory.create_connector(
                 config=self.vllm_config, role=KVConnectorRole.SCHEDULER)
+            self.pd_type = self.vllm_config.kv_transfer_config.kv_role
+            assert self.pd_type in ("p_heavy", "d_heavy")
+            self.proxy_address = self.vllm_config.kv_transfer_config.proxy_address
 
         self.kv_event_publisher = EventPublisherFactory.create(
             self.kv_events_config,
@@ -174,6 +177,49 @@ class Scheduler(SchedulerInterface):
         )
         self.use_pp = self.parallel_config.pipeline_parallel_size > 1
 
+    def algo1(
+        self,
+        decoding_reqs: list[Request],
+        tpot_slo,
+        now_kv_cache_slots,
+        factor,
+        kv_cache_watermark,
+    ):
+        leave_reqs = []
+        if self.pd_type == "p_heavy":
+            leave_reqs = [req for req in decoding_reqs if req.tpot > tpot_slo * factor]
+            decoding_reqs.remove_all(leave_reqs)
+        elif self.pd_type == "d_heavy":
+            def get_max_output_req(reqs):
+                max_output_req = None
+                max_output_tokens = -1
+                for req in reqs:
+                    output_tokens = len(req.output_token_ids)
+                    if output_tokens > max_output_tokens:
+                        max_output_tokens = output_tokens
+                        max_output_req = req
+                return max_output_req, max_output_tokens
+            
+            while now_kv_cache_slots < kv_cache_watermark and decoding_reqs:
+                max_output_req, max_output_tokens = get_max_output_req(decoding_reqs)
+                if max_output_req is None:
+                    break
+                leave_reqs.append(max_output_req)
+                decoding_reqs.remove(max_output_req)
+                now_kv_cache_slots -= max_output_tokens
+        
+        shifted_reqs = [
+            ShiftedRequestData(
+                req_id=req.request_id,
+                token_ids=req.all_token_ids,
+                block_ids=self.kv_cache_manager.get_blocks(req.request_id).get_block_ids()[0],
+                remote_address=None,
+            )
+            for req in leave_reqs
+        ]
+        return shifted_reqs
+        
+
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
@@ -204,6 +250,13 @@ class Scheduler(SchedulerInterface):
         scheduled_timestamp = time.monotonic()
 
         # First, schedule the RUNNING requests.
+        shifted_reqs = self.algo1(
+            self.running,
+            tpot_slo=0.5,
+            now_kv_cache_slots=1000,
+            factor=0.8,
+            kv_cache_watermark=9000,
+        )
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
@@ -597,6 +650,7 @@ class Scheduler(SchedulerInterface):
             get_freed_mm_hashes(),
             structured_output_request_ids=structured_output_request_ids,
             grammar_bitmask=grammar_bitmask,
+            shifted_reqs=shifted_reqs,
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -976,6 +1030,9 @@ class Scheduler(SchedulerInterface):
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
 
+        for shifed_req in scheduler_output.shifted_reqs:
+            self.finish_requests(shifed_req.request_id, RequestStatus.FINISHED_ABORTED)
+        
         # Remove the stopped requests from the running and waiting queues.
         if stopped_running_reqs:
             self.running = remove_all(self.running, stopped_running_reqs)

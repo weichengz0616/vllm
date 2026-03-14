@@ -21,6 +21,7 @@ from vllm.distributed.device_communicators.pynccl_wrapper import (
 from vllm.distributed.kv_transfer.kv_connector.v1.p2p.tensor_memory_pool import (  # noqa: E501
     TensorMemoryPool)
 from vllm.utils import current_stream, get_ip
+from vllm.v1.core.sched.output import ShiftedRequestData
 
 logger = logging.getLogger(__name__)
 
@@ -495,17 +496,17 @@ class P2pNcclEngine:
         return finished_sending or None, finished_recving or None
 
     def ping(self):
-        sock = self.context.socket(zmq.DEALER)
-        sock.setsockopt_string(zmq.IDENTITY, self.zmq_address)
+        self.proxy_sock = self.context.socket(zmq.DEALER)
+        self.proxy_sock.setsockopt_string(zmq.IDENTITY, self.zmq_address)
         logger.debug("ping start, zmq_address:%s", self.zmq_address)
-        sock.connect(f"tcp://{self.proxy_address}")
+        self.proxy_sock.connect(f"tcp://{self.proxy_address}")
         data = {
-            "type": "P" if self.config.is_kv_producer else "D",
+            "type": self.config.kv_role,
             "http_address": self.http_address,
             "zmq_address": self.zmq_address
         }
         while True:
-            sock.send(msgpack.dumps(data))
+            self.proxy_sock.send(msgpack.dumps(data))
             time.sleep(3)
 
     def send(self, comm, tensor: torch.Tensor, dst: int, stream=None):
@@ -540,3 +541,22 @@ class P2pNcclEngine:
             self._send_thread.join()
         if self._ping_thread is not None:
             self._ping_thread.join()
+
+    def get_remote_address(self, shifted_req: ShiftedRequestData, src: str) -> Optional[str]:
+        data = {
+            "cmd": "GET_REMOTE_ADDRESS",
+            "req_id": shifted_req.req_id,
+            "token_ids": shifted_req.token_ids,
+            "src_type": src,
+        }
+        self.proxy_sock.send(msgpack.dumps(data))
+        response = self.proxy_sock.recv()
+        response_data = msgpack.loads(response)
+        if response_data["ret"] != 0:
+            logger.error(
+                "🔴Get Remote Address Failed, req_id:%s, token_ids:%s, "
+                "src:%s, response:%s", shifted_req.req_id, shifted_req.token_ids,
+                src, response_data)
+            return None
+        
+        return response_data["remote_address"]

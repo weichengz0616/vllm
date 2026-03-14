@@ -34,6 +34,7 @@ class ReqMeta:
     block_ids: torch.Tensor
     # Request num tokens
     num_tokens: int
+    remote_address: Optional[str] = None
 
     @staticmethod
     def make_meta(request_id: str, token_ids: list[int], block_ids: list[int],
@@ -59,9 +60,10 @@ class P2pNcclConnectorMetadata(KVConnectorMetadata):
         token_ids: list[int],
         block_ids: list[int],
         block_size: int,
+        remote_address: Optional[str] = None,
     ) -> None:
         self.requests.append(
-            ReqMeta.make_meta(request_id, token_ids, block_ids, block_size))
+            ReqMeta.make_meta(request_id, token_ids, block_ids, block_size, remote_address))
 
 
 class P2pNcclConnector(KVConnectorBase_V1):
@@ -85,6 +87,9 @@ class P2pNcclConnector(KVConnectorBase_V1):
             hostname="",
             port_offset=self._rank,
         ) if role == KVConnectorRole.WORKER else None
+
+        self.pd_type = vllm_config.kv_transfer_config.kv_role
+        assert self.pd_type in ("p_heavy", "d_heavy")
 
     # ==============================
     # Worker-side methods
@@ -264,8 +269,8 @@ class P2pNcclConnector(KVConnectorBase_V1):
         assert isinstance(connector_metadata, P2pNcclConnectorMetadata)
         for request in connector_metadata.requests:
             request_id = request.request_id
-            ip, port = self.parse_request_id(request_id, True)
-            remote_address = ip + ":" + str(port + self._rank)
+            # ip, port = self.parse_request_id(request_id, True)
+            remote_address = request.remote_address
 
             kv_cache = extract_kv_from_layer(kv_layer, request.block_ids)
             self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
@@ -354,6 +359,28 @@ class P2pNcclConnector(KVConnectorBase_V1):
         """
 
         meta = P2pNcclConnectorMetadata()
+
+        for shift_req in scheduler_output.shifted_reqs:
+            if shift_req.remote_address is not None:
+                meta.add_request(
+                    request_id=shift_req.req_id,
+                    token_ids=shift_req.token_ids,
+                    block_ids=shift_req.block_ids,
+                    block_size=self._block_size,
+                    remote_address=shift_req.remote_address,
+                )
+            else:
+                remote_address = self.p2p_nccl_engine.get_remote_address(
+                    shift_req, self.pd_type,
+                )
+                meta.add_request(
+                    request_id=shift_req.req_id,
+                    token_ids=shift_req.token_ids,
+                    block_ids=shift_req.block_ids,
+                    block_size=self._block_size,
+                    remote_address=remote_address,
+                )
+
 
         for new_req in scheduler_output.scheduled_new_reqs:
             if self.is_producer:

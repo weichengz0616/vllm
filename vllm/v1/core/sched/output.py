@@ -111,8 +111,15 @@ class CachedRequestData:
             new_block_ids=[],
             num_computed_tokens=[],
         )
+    
 
-
+@dataclass
+class ShiftedRequestData:
+    req_id: str
+    token_ids: list[int]
+    block_ids: list[int]
+    remote_address: Optional[str] = None
+    
 @bc_linter_include
 @dataclass
 class SchedulerOutput:
@@ -160,3 +167,6 @@ class SchedulerOutput:
 
     # KV Cache Connector metadata.
     kv_connector_metadata: Optional[KVConnectorMetadata] = None
+
+    # 当前需要调度走的请求
+    shifted_reqs: Optional[list[ShiftedRequestData]] = None
